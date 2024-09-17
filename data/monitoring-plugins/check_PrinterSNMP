@@ -1,0 +1,119 @@
+#!/bin/bash
+#   The script checks if an Epson printer is in an error state.
+#   OK - running
+#   WARNING - does not exist
+#   CRITICAL - error
+#   UNKNOWN - does not exist
+
+# Function to display help message
+show_help_message() {
+    echo "Usage: $0 -H <host> -v <version> -c <community> [-h]"
+    echo "Options:"
+    echo "  -H   Specify the host"
+    echo "  -v   Specify the SNMP version"
+    echo "  -c   Specify the SNMP community"
+    echo "  -h   Show this help message"
+}
+
+# Initialize variables
+host=""
+version=""
+community=""
+OIDbase="iso.3.6.1.2.1.43.18.1.1.2.1."
+searchstring="INTEGER: 4"
+OIDMessageBase="iso.3.6.1.2.1.43.18.1.1.8.1."
+
+# Parse command-line options
+while getopts ":H:v:c:h" opt; do
+    case $opt in
+        H)
+            host="$OPTARG"
+            ;;
+        v)
+            version="$OPTARG"
+            ;;
+        c)
+            community="$OPTARG"
+            ;;
+        h)
+            show_help_message
+            exit 0
+            ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            show_help_message
+            exit 1
+            ;;
+        :)
+            echo "Option -$OPTARG requires an argument." >&2
+            show_help_message
+            exit 1
+            ;;
+    esac
+done
+
+# Ensure required parameters are set
+if [ -z "$host" ] || [ -z "$version" ] || [ -z "$community" ]; then
+    echo "Error: Host, version, and community must be specified." >&2
+    show_help_message
+    exit 1
+fi
+
+# Loop through numbers 0 to 9
+for ending in $(seq 0 9); do
+    OID="${OIDbase}${ending}"
+
+    # Execute snmpget command and capture output
+    response=$(snmpget -v "$version" -c "$community" "$host" "$OID" 2>&1)
+
+    # Check for timeout or unreachable error
+    if [ $? -ne 0 ]; then
+        if echo "$response" | grep -q "Timeout"; then
+            echo "CRITICAL - Timeout occurred while getting SNMP values."
+            exit 2
+        elif echo "$response" | grep -q "noSuchName"; then
+            # Skip this OID if it does not exist in the MIB
+            continue
+        else
+            echo "CRITICAL - Error retrieving SNMP values: $response"
+            exit 2
+        fi
+    fi
+
+    # Check if the response contains the search string
+    if echo "$response" | grep -q "$searchstring"; then
+        OIDMessage="${OIDMessageBase}${ending}"
+
+        # Execute snmpget command for error message
+        ErrorMessage=$(snmpget -v "$version" -c "$community" "$host" "$OIDMessage" 2>&1)
+
+        # Check for timeout in error message response
+        if [ $? -ne 0 ]; then
+            if echo "$ErrorMessage" | grep -q "Timeout"; then
+                echo "CRITICAL - Timeout occurred while getting error message."
+                exit 2
+            elif echo "$ErrorMessage" | grep -q "noSuchName"; then
+                # Skip this OID if it does not exist in the MIB
+                continue
+            else
+                echo "CRITICAL - Error retrieving error message: $ErrorMessage"
+                exit 2
+            fi
+        fi
+
+        # Check if the error message contains "STRING: "
+        if echo "$ErrorMessage" | grep -q 'STRING: "'; then
+            extractedMessage=$(echo "$ErrorMessage" | grep 'STRING: "' | sed -E 's/.*STRING: "([^"]*)".*/\1/')
+            echo "CRITICAL - $extractedMessage"
+            exit 2
+        else
+            echo "CRITICAL - unknown Error"
+            exit 2
+        fi
+    fi
+done
+
+# If no errors are found
+echo "OK - No critical errors found."
+exit 0
+

@@ -1,0 +1,88 @@
+#!/bin/bash
+
+# Function to display usage message
+usage() {
+    echo "Usage: $0 -H <remote_host> -U <ssh_user> -P <ssh_password>"
+    exit 1
+}
+
+# Parse command-line arguments
+while getopts "H:U:P:" opt; do
+    case ${opt} in
+        H )
+            REMOTE_HOST=$OPTARG
+            ;;
+        U )
+            SSH_USER=$OPTARG
+            ;;
+        P )
+            SSH_PASSWORD=$OPTARG
+            ;;
+        \? )
+            usage
+            ;;
+    esac
+done
+
+# Check if REMOTE_HOST, SSH_USER, and SSH_PASSWORD are set
+if [ -z "$REMOTE_HOST" ] || [ -z "$SSH_USER" ] || [ -z "$SSH_PASSWORD" ]; then
+    usage
+fi
+
+# Create an expect script to handle SSH password input
+EXPECT_SCRIPT=$(mktemp)
+cat <<EOF > "$EXPECT_SCRIPT"
+#!/usr/bin/expect -f
+
+set timeout 10
+spawn ssh -o StrictHostKeyChecking=no $SSH_USER@$REMOTE_HOST "acpi -b"
+expect {
+    "yes/no" { send "yes\r"; exp_continue }
+    "password:" { send "$SSH_PASSWORD\r" }
+}
+expect eof
+EOF
+
+# Make the expect script executable
+chmod +x "$EXPECT_SCRIPT"
+
+# Run the expect script and capture output
+BATTERY_INFO=$("$EXPECT_SCRIPT")
+if [ $? -ne 0 ]; then
+    echo "Error: SSH connection to $REMOTE_HOST failed."
+    rm -f "$EXPECT_SCRIPT"
+    exit 1
+fi
+
+# Clean up
+rm -f "$EXPECT_SCRIPT"
+
+# Extract battery status and percentage from the output
+BATTERY_STATUS=$(echo "$BATTERY_INFO" | grep -o 'Charging\|Discharging\|Full')
+BATTERY_PERCENTAGE=$(echo "$BATTERY_INFO" | awk -F', ' '{print $2}' | awk -F'%' '{print $1}')
+
+# Check if acpi command succeeded
+if [ -z "$BATTERY_STATUS" ] || [ -z "$BATTERY_PERCENTAGE" ]; then
+    echo "Error: Failed to parse battery information from $REMOTE_HOST."
+    exit 2
+fi
+
+# Determine if the charger is connected
+if echo "$BATTERY_STATUS" | grep -q "Charging\|Full"; then
+    if [ "$BATTERY_PERCENTAGE" -gt 30 ]; then
+        echo "OK - Charger connected and Battery over 30%"
+        exit 0
+    else
+        echo "OK - Charger connected and Battery 30% or below"
+        exit 0
+    fi
+else
+    if [ "$BATTERY_PERCENTAGE" -gt 60 ]; then
+        echo "WARNING - Charger is not connected, Battery over 60%"
+        exit 1
+    else
+        echo "CRITICAL - Charger is not connected, Battery under 60%"
+        exit 2
+    fi
+fi
+
