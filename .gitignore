@@ -1,0 +1,8 @@
+# Ignore "db" folder and all its content
+db/
+db/**
+
+# Ignore everything in "data" folder, but except "monitoring-plugins"
+data/*
+!data/monitoring-plugins/
+!data/monitoring-plugins/**
